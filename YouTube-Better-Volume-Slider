@@ -1,0 +1,909 @@
+// ==UserScript==
+// @name         YouTube - Better Volume Slider by Sarg
+// @namespace    BVSSarg
+// @version      1.7.0
+// @description  Better YouTube volume slider with 1% control, percentage display, saved volume, and automatic volume protection.
+// @author       Sarg
+// @match        https://www.youtube.com/*
+// @updateURL    https://raw.githubusercontent.com/YOURUSERNAME/SargScripts/main/YouTube-Better-Volume-Slider.user.js
+// @downloadURL  https://raw.githubusercontent.com/YOURUSERNAME/SargScripts/main/YouTube-Better-Volume-Slider.user.js
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const SLIDER_ID = 'bvs-sarg-volume-slider';
+    const DISPLAY_ID = 'bvs-sarg-volume-display';
+    const STYLE_ID = 'bvs-sarg-volume-style';
+
+    const VOLUME_STORAGE_KEY = 'bvs-sarg-saved-volume';
+
+    let video = null;
+    let player = null;
+    let initializedVideo = null;
+
+    let restoringVolume = false;
+
+    // The volume we believe the user intentionally selected.
+    let protectedVolume = null;
+
+    // Used to prevent the protection system from immediately
+    // undoing a legitimate manual slider adjustment.
+    let manualChangeUntil = 0;
+
+    // Prevents repeatedly correcting the same change.
+    let lastCorrectionTime = 0;
+
+    // =========================================================
+    // CSS
+    // =========================================================
+
+    function addCSS() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+
+        style.textContent = `
+            .ytp-volume-panel {
+                width: 255px !important;
+                min-width: 255px !important;
+                display: flex !important;
+                align-items: center !important;
+                height: 36px !important;
+            }
+
+            .ytp-volume-panel .ytp-mute-button {
+                flex-shrink: 0 !important;
+                align-self: center !important;
+            }
+
+            .ytp-volume-slider {
+                display: none !important;
+            }
+
+            #${SLIDER_ID} {
+                appearance: none !important;
+                -webkit-appearance: none !important;
+
+                display: block !important;
+
+                width: 150px !important;
+                min-width: 150px !important;
+                max-width: 150px !important;
+
+                height: 4px !important;
+
+                margin: 0 7px !important;
+                padding: 0 !important;
+
+                border: 0 !important;
+                border-radius: 4px !important;
+                outline: none !important;
+
+                cursor: pointer !important;
+
+                align-self: center !important;
+
+                background:
+                    linear-gradient(
+                        to right,
+                        #ffffff 0%,
+                        #ffffff var(--volume),
+                        rgba(255,255,255,0.35) var(--volume),
+                        rgba(255,255,255,0.35) 100%
+                    ) !important;
+            }
+
+            #${SLIDER_ID}::-webkit-slider-thumb {
+                appearance: none !important;
+                -webkit-appearance: none !important;
+
+                width: 12px !important;
+                height: 12px !important;
+
+                margin: 0 !important;
+
+                border: none !important;
+                border-radius: 50% !important;
+
+                background: #ffffff !important;
+
+                cursor: pointer !important;
+            }
+
+            #${SLIDER_ID}::-moz-range-thumb {
+                width: 12px !important;
+                height: 12px !important;
+
+                margin: 0 !important;
+
+                border: none !important;
+                border-radius: 50% !important;
+
+                background: #ffffff !important;
+
+                cursor: pointer !important;
+            }
+
+            #${SLIDER_ID}:hover {
+                height: 5px !important;
+            }
+
+            #${DISPLAY_ID} {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+
+                flex-shrink: 0 !important;
+
+                width: 38px !important;
+                min-width: 38px !important;
+
+                height: 24px !important;
+
+                margin: 0 4px 0 0 !important;
+                padding: 0 !important;
+
+                color: #ffffff !important;
+
+                font-family: Roboto, Arial, sans-serif !important;
+                font-size: 13px !important;
+                font-weight: 500 !important;
+
+                line-height: 1 !important;
+                text-align: center !important;
+
+                pointer-events: none !important;
+                user-select: none !important;
+
+                align-self: center !important;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    // =========================================================
+    // FIND VIDEO / PLAYER
+    // =========================================================
+
+    function findVideo() {
+        return document.querySelector(
+            'video.html5-main-video'
+        );
+    }
+
+    function findPlayer() {
+        return document.getElementById(
+            'movie_player'
+        );
+    }
+
+    // =========================================================
+    // GET YOUTUBE VOLUME
+    // =========================================================
+
+    function getYouTubeVolume() {
+        const ytPlayer = findPlayer();
+
+        if (
+            ytPlayer &&
+            typeof ytPlayer.getVolume === 'function'
+        ) {
+            try {
+                const volume =
+                    ytPlayer.getVolume();
+
+                if (Number.isFinite(volume)) {
+                    return Math.round(
+                        Math.max(
+                            0,
+                            Math.min(
+                                100,
+                                volume
+                            )
+                        )
+                    );
+                }
+            } catch (e) {}
+        }
+
+        if (video) {
+            return Math.round(
+                video.volume * 100
+            );
+        }
+
+        return 100;
+    }
+
+    // =========================================================
+    // SET YOUTUBE VOLUME
+    // =========================================================
+
+    function setYouTubeVolume(value) {
+        value = Math.round(
+            Number(value)
+        );
+
+        value = Math.max(
+            0,
+            Math.min(
+                100,
+                value
+            )
+        );
+
+        const ytPlayer =
+            findPlayer();
+
+        if (
+            ytPlayer &&
+            typeof ytPlayer.setVolume ===
+                'function'
+        ) {
+            try {
+                ytPlayer.setVolume(
+                    value
+                );
+            } catch (e) {}
+        }
+
+        if (video) {
+            try {
+                video.volume =
+                    value / 100;
+            } catch (e) {}
+        }
+    }
+
+    // =========================================================
+    // SAVED VOLUME
+    // =========================================================
+
+    function getSavedVolume() {
+        const saved =
+            localStorage.getItem(
+                VOLUME_STORAGE_KEY
+            );
+
+        if (saved === null) {
+            return null;
+        }
+
+        const value =
+            Number(saved);
+
+        if (
+            !Number.isFinite(value) ||
+            value < 0 ||
+            value > 100
+        ) {
+            return null;
+        }
+
+        return Math.round(
+            value
+        );
+    }
+
+    function saveVolume(value) {
+        value = Math.round(
+            Number(value)
+        );
+
+        value = Math.max(
+            0,
+            Math.min(
+                100,
+                value
+            )
+        );
+
+        localStorage.setItem(
+            VOLUME_STORAGE_KEY,
+            String(value)
+        );
+
+        protectedVolume =
+            value;
+    }
+
+    // =========================================================
+    // DISPLAY
+    // =========================================================
+
+    function updateDisplay() {
+        const slider =
+            document.getElementById(
+                SLIDER_ID
+            );
+
+        const display =
+            document.getElementById(
+                DISPLAY_ID
+            );
+
+        if (
+            !slider ||
+            !display
+        ) {
+            return;
+        }
+
+        const volume =
+            getYouTubeVolume();
+
+        slider.value =
+            volume;
+
+        slider.style.setProperty(
+            '--volume',
+            volume + '%'
+        );
+
+        display.textContent =
+            volume + '%';
+    }
+
+    // =========================================================
+    // MANUAL VOLUME CHANGE
+    // =========================================================
+
+    function setVolume(
+        value,
+        remember = true
+    ) {
+        value = Math.round(
+            Number(value)
+        );
+
+        value = Math.max(
+            0,
+            Math.min(
+                100,
+                value
+            )
+        );
+
+        /*
+         * Tell the protection system that this was
+         * intentionally changed by the user.
+         */
+        manualChangeUntil =
+            Date.now() + 1500;
+
+        setYouTubeVolume(
+            value
+        );
+
+        if (remember) {
+            saveVolume(
+                value
+            );
+        }
+
+        protectedVolume =
+            value;
+
+        updateDisplay();
+    }
+
+    // =========================================================
+    // RESTORE SAVED VOLUME
+    // =========================================================
+
+    function restoreSavedVolume() {
+        if (!video) {
+            return;
+        }
+
+        const saved =
+            getSavedVolume();
+
+        if (saved === null) {
+            return;
+        }
+
+        restoringVolume =
+            true;
+
+        protectedVolume =
+            saved;
+
+        setYouTubeVolume(
+            saved
+        );
+
+        updateDisplay();
+
+        /*
+         * YouTube sometimes reapplies its own player
+         * volume shortly after a new video loads.
+         */
+
+        setTimeout(() => {
+            if (video) {
+                setYouTubeVolume(
+                    saved
+                );
+
+                updateDisplay();
+            }
+        }, 150);
+
+        setTimeout(() => {
+            if (video) {
+                setYouTubeVolume(
+                    saved
+                );
+
+                updateDisplay();
+            }
+
+            restoringVolume =
+                false;
+        }, 500);
+
+        setTimeout(() => {
+            if (video) {
+                setYouTubeVolume(
+                    saved
+                );
+
+                updateDisplay();
+            }
+        }, 1000);
+    }
+
+    // =========================================================
+    // VOLUME PROTECTION
+    // =========================================================
+
+    function checkForUnexpectedVolumeChange() {
+        if (!video) {
+            return;
+        }
+
+        if (!protectedVolume &&
+            protectedVolume !== 0) {
+            const current =
+                getYouTubeVolume();
+
+            if (
+                Number.isFinite(
+                    current
+                )
+            ) {
+                protectedVolume =
+                    current;
+            }
+
+            return;
+        }
+
+        /*
+         * Don't interfere immediately after the user
+         * intentionally moved the slider.
+         */
+        if (
+            Date.now() <
+            manualChangeUntil
+        ) {
+            return;
+        }
+
+        /*
+         * Don't interfere during our own restoration.
+         */
+        if (restoringVolume) {
+            return;
+        }
+
+        /*
+         * Don't fight the mute button.
+         *
+         * YouTube can set the HTML5 video's volume to 0
+         * while muted. The player's actual selected
+         * volume may still be 9%, 50%, etc.
+         */
+        if (video.muted) {
+            return;
+        }
+
+        const current =
+            getYouTubeVolume();
+
+        if (
+            !Number.isFinite(
+                current
+            )
+        ) {
+            return;
+        }
+
+        /*
+         * Everything is normal.
+         */
+        if (
+            current ===
+            protectedVolume
+        ) {
+            return;
+        }
+
+        /*
+         * YouTube appears to have changed the volume.
+         *
+         * Don't immediately spam setVolume().
+         */
+        const now =
+            Date.now();
+
+        if (
+            now -
+            lastCorrectionTime <
+            500
+        ) {
+            return;
+        }
+
+        lastCorrectionTime =
+            now;
+
+        const target =
+            protectedVolume;
+
+        setYouTubeVolume(
+            target
+        );
+
+        /*
+         * Update the UI to the protected value.
+         */
+        const slider =
+            document.getElementById(
+                SLIDER_ID
+            );
+
+        const display =
+            document.getElementById(
+                DISPLAY_ID
+            );
+
+        if (slider) {
+            slider.value =
+                target;
+
+            slider.style.setProperty(
+                '--volume',
+                target + '%'
+            );
+        }
+
+        if (display) {
+            display.textContent =
+                target + '%';
+        }
+    }
+
+    // =========================================================
+    // CREATE CONTROLS
+    // =========================================================
+
+    function createControls() {
+        const panel =
+            document.querySelector(
+                '.ytp-volume-panel'
+            );
+
+        if (!panel) {
+            return false;
+        }
+
+        if (
+            document.getElementById(
+                SLIDER_ID
+            )
+        ) {
+            updateDisplay();
+            return true;
+        }
+
+        // -----------------------------------------------------
+        // Slider
+        // -----------------------------------------------------
+
+        const slider =
+            document.createElement(
+                'input'
+            );
+
+        slider.id =
+            SLIDER_ID;
+
+        slider.type =
+            'range';
+
+        slider.min =
+            '0';
+
+        slider.max =
+            '100';
+
+        slider.step =
+            '1';
+
+        slider.value =
+            getYouTubeVolume();
+
+        slider.setAttribute(
+            'aria-label',
+            'Volume'
+        );
+
+        // -----------------------------------------------------
+        // Percentage
+        // -----------------------------------------------------
+
+        const display =
+            document.createElement(
+                'span'
+            );
+
+        display.id =
+            DISPLAY_ID;
+
+        display.textContent =
+            getYouTubeVolume() +
+            '%';
+
+        // -----------------------------------------------------
+        // Add
+        // -----------------------------------------------------
+
+        panel.appendChild(
+            slider
+        );
+
+        panel.appendChild(
+            display
+        );
+
+        // -----------------------------------------------------
+        // Slider events
+        // -----------------------------------------------------
+
+        slider.addEventListener(
+            'input',
+            function (event) {
+                event.stopPropagation();
+
+                setVolume(
+                    this.value,
+                    true
+                );
+            }
+        );
+
+        slider.addEventListener(
+            'change',
+            function (event) {
+                event.stopPropagation();
+
+                setVolume(
+                    this.value,
+                    true
+                );
+            }
+        );
+
+        [
+            'mousedown',
+            'mouseup',
+            'click',
+            'dblclick',
+            'pointerdown',
+            'pointerup'
+        ].forEach(
+            eventName => {
+                slider.addEventListener(
+                    eventName,
+                    function (event) {
+                        event.stopPropagation();
+                    }
+                );
+            }
+        );
+
+        return true;
+    }
+
+    // =========================================================
+    // ATTACH VIDEO
+    // =========================================================
+
+    function attachVideo() {
+        const currentVideo =
+            findVideo();
+
+        if (!currentVideo) {
+            return false;
+        }
+
+        if (
+            initializedVideo ===
+            currentVideo
+        ) {
+            video =
+                currentVideo;
+
+            return true;
+        }
+
+        video =
+            currentVideo;
+
+        initializedVideo =
+            currentVideo;
+
+        protectedVolume =
+            getSavedVolume();
+
+        if (
+            protectedVolume === null
+        ) {
+            protectedVolume =
+                getYouTubeVolume();
+        }
+
+        video.addEventListener(
+            'volumechange',
+            () => {
+                if (restoringVolume) {
+                    return;
+                }
+
+                /*
+                 * If the user is not manually dragging
+                 * the slider, don't automatically change
+                 * our protected target here.
+                 *
+                 * This is important because this event
+                 * is exactly what we're trying to detect.
+                 */
+                updateDisplay();
+            }
+        );
+
+        return true;
+    }
+
+    // =========================================================
+    // INITIALIZE
+    // =========================================================
+
+    function initialize() {
+        addCSS();
+
+        if (!attachVideo()) {
+            return false;
+        }
+
+        player =
+            findPlayer();
+
+        if (!createControls()) {
+            return false;
+        }
+
+        updateDisplay();
+
+        return true;
+    }
+
+    // =========================================================
+    // STARTUP
+    // =========================================================
+
+    let attempts = 0;
+
+    const startupTimer =
+        setInterval(() => {
+            const previousVideo =
+                video;
+
+            initialize();
+
+            if (
+                video &&
+                video !== previousVideo
+            ) {
+                restoreSavedVolume();
+            }
+
+            attempts++;
+
+            if (
+                attempts >= 60
+            ) {
+                clearInterval(
+                    startupTimer
+                );
+            }
+        }, 500);
+
+    // =========================================================
+    // YOUTUBE SPA NAVIGATION
+    // =========================================================
+
+    document.addEventListener(
+        'yt-navigate-finish',
+        () => {
+            video = null;
+            player = null;
+            initializedVideo = null;
+            protectedVolume = null;
+
+            setTimeout(() => {
+                initialize();
+
+                if (video) {
+                    restoreSavedVolume();
+                }
+            }, 500);
+
+            setTimeout(() => {
+                initialize();
+
+                if (video) {
+                    restoreSavedVolume();
+                }
+            }, 1500);
+        }
+    );
+
+    // =========================================================
+    // DETECT PLAYLIST VIDEO CHANGES
+    // =========================================================
+
+    setInterval(() => {
+        const currentVideo =
+            findVideo();
+
+        if (
+            currentVideo &&
+            currentVideo !== video
+        ) {
+            video =
+                currentVideo;
+
+            initializedVideo =
+                null;
+
+            protectedVolume =
+                null;
+
+            initialize();
+
+            restoreSavedVolume();
+        }
+    }, 500);
+
+    // =========================================================
+    // VOLUME PROTECTION LOOP
+    // =========================================================
+
+    /*
+     * Check frequently enough to catch a sudden change,
+     * but not so frequently that we constantly fight
+     * YouTube's player.
+     */
+    setInterval(() => {
+        checkForUnexpectedVolumeChange();
+    }, 250);
+
+})();
