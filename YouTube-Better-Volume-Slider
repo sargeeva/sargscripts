@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube - Better Volume Slider by Sarg
 // @namespace    BVSSarg
-// @version      1.7.1
+// @version      1.7.2
 // @description  Better YouTube volume slider with 1% control, percentage display, saved volume, and automatic volume protection.
 // @author       Sarg
 // @match        https://www.youtube.com/*
