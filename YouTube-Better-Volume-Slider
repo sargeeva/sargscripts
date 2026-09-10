@@ -5,8 +5,8 @@
 // @description  Better YouTube volume slider with 1% control, percentage display, saved volume, and automatic volume protection.
 // @author       Sarg
 // @match        https://www.youtube.com/*
-// @updateURL    https://github.com/sargeeva/sargscripts/raw/refs/heads/main/YouTube-Better-Volume-Slider.user.js
-// @downloadURL  https://github.com/sargeeva/sargscripts/raw/refs/heads/main/YouTube-Better-Volume-Slider.user.js
+// @updateURL    https://github.com/sargeeva/sargscripts/raw/refs/heads/main/YouTube-Better-Volume-Slider
+// @downloadURL  https://github.com/sargeeva/sargscripts/raw/refs/heads/main/YouTube-Better-Volume-Slider
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
